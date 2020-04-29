@@ -95,7 +95,7 @@ check_target_file() {
 
 get_current_revision() {
   local file="$1"
-  "$RLOG" "$file" | head | grep "^head"
+  "$RLOG" "$file" | head | grep "^head" | awk '{print $2}'
 }
 
 detect_target_revisions() {
