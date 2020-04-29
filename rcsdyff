@@ -1,0 +1,162 @@
+#!/bin/bash -e
+# vim: ai ts=2 sw=2 et sts=2 ft=sh
+
+TMPFILES=""
+[ -z "$TMPDIR" ] && TMPDIR=/tmp
+[ -z "$DYFF" ] && DYFF="$(which dyff)"
+[ -z "$RLOG" ] && RLOG="$(which rlog)"
+[ -z "$RCS_CO" ] && RCS_CO="$(which co)"
+
+usage() {
+  cat <<EOS
+Usage: rcsdyff [options] file
+
+dyff version rcsdiff
+
+Options:
+  -rREV       (zero, one, or two times) Name a revision.
+EOS
+}
+
+cleanup() {
+  cleanup_tmpfiles
+}
+
+cleanup_tmpfiles() {
+  [ -n "$TMPFILES" ] && rm -f $TMPFILES
+}
+
+add_tmpfiles() {
+  TMPFILES="$TMPFILES $*"
+}
+
+echo_error() {
+  echo "$@" >&2
+}
+
+prepare() {
+  trap cleanup EXIT
+  if ! parse_options "$@"; then
+    exit 1
+  fi
+
+  if [ ! -x "$RLOG" ]; then
+    echo_error "Error: rlog is not executable."
+    exit 1
+  fi
+
+  if [ ! -x "$RCS_CO" ]; then
+    echo_error "Error: co is not executable."
+    exit 1
+  fi
+
+  if [ ! -x "$DYFF" ]; then
+    echo_error "Error: dyff is not executable."
+    exit 1
+  fi
+}
+
+parse_options() {
+  REVISIONS=""
+  TARGET_FILE=""
+  DYFF_FILES=""
+  DYFF_OPTS=""
+
+  while getopts r:h OPT; do
+    case $OPT in
+      r)
+        if echo "$OPTARG" | egrep -q "[0-9]+\.[0-9]+"; then
+          REVISIONS="$REVISIONS $OPTARG"
+        else
+          echo_error "Error: Revision must be a numeric string."
+          return 1
+          :
+        fi
+        ;;
+      *)
+        usage
+        return 1
+        ;;
+    esac
+  done
+
+  shift $((OPTIND - 1))
+  TARGET_FILE="$1"
+  return 0
+}
+
+check_target_file() {
+  local rcsvfile="$("$RLOG" -R "$TARGET_FILE")"
+  if [ "$?" -ne 0 ]; then
+    return 1
+  fi
+  [ -r "$rcsvfile" ]
+}
+
+get_current_revision() {
+  local file="$1"
+  "$RLOG" "$file" | head | grep "^head"
+}
+
+detect_target_revisions() {
+  local rev_count=$(echo "$REVISIONS" | wc -w)
+
+  if [ "$rev_count" -eq 0 ]; then
+    # current_rev vs current_working_copy
+
+    current_rev=$(get_current_revision "$TARGET_FILE")
+    REVISIONS="$current_rev -"
+    :
+  elif [ "$rev_count" -eq 1 ]; then
+    # specified_rev vs current_working_copy
+    REVISIONS="$REVISIONS -"
+    :
+  elif [ "$rev_count" -eq 2 ]; then
+    # specified_rev vs specified_rev
+    # do nothing
+    :
+  else
+    echo_error "Error: You can specify onli 0 to 2 revisons."
+    return 1
+  fi
+
+}
+
+fetch_target_revisions() {
+  for rev in $REVISIONS; do
+    local tmp_file="$TMPDIR/rcsdyff.$$.$rev"
+    touch "$tmp_file" && chmod 600 "$tmp_file"
+
+    if [ "$rev" == "-" ]; then
+      cat "$TARGET_FILE" > "$tmp_file"
+    else
+      "$RCS_CO" -q -p"$rev" "$TARGET_FILE" > "$tmp_file"
+    fi
+
+    DYFF_FILES="$DYFF_FILES $tmp_file"
+    add_tmpfiles "$tmp_file"
+  done
+}
+
+do_diff() {
+  "$DYFF" $DYFF_OPTS between $DYFF_FILES
+}
+
+main() {
+  prepare "$@"
+
+  if ! check_target_file; then
+    echo_error "Error: cannot read rcs file."
+    exit 1
+  fi
+
+  detect_target_revisions
+  fetch_target_revisions
+  do_diff
+
+  exit 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
